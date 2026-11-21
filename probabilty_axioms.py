@@ -19,8 +19,10 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from tkinter import messagebox, simpledialog, ttk
 from tkinter import font as tkfont
-from typing import Sequence
+from typing import Callable, Sequence
 from uuid import uuid4
+
+from gavel_animation import GavelAnimation
 
 TOL = 1e-9
 NEGATIVE_TOL = 1e-12
@@ -28,6 +30,9 @@ MAX_HISTORY = 200
 SIDEBAR_WIDTH = 270
 LEFT_MIN_WIDTH = 680
 DATE_FORMAT = "%b {day}, %Y · {hour}:{minute} %p"
+AXIOM_DELAY_MS = 600
+DOTS_MS = 1000
+SPINNER_MS = 100
 VERDICT_VALID = "valid"
 VERDICT_INVALID = "invalid"
 
@@ -405,6 +410,12 @@ class AxiomsApp:
         self.history: list[HistoryEntry] = []
         self.sidebar_visible = True
         self._active_session_id: str | None = None
+        self.animation_running = False
+        self._animation_after_ids: list[str] = []
+        self._animation_lines: list[tuple[str, str]] = []
+        self._animation_checks: list[CheckResult] = []
+        self._animation_valid = False
+        self._closing = False
 
         root.title("Kolmogorov Axioms Validator")
         root.geometry("960x600")
@@ -477,14 +488,28 @@ class AxiomsApp:
         # --- Buttons ---
         buttons = ttk.Frame(main)
         buttons.pack(fill="x", pady=(0, 10))
-        ttk.Button(buttons, text="Validate", command=self.validate).pack(side="left")
-        ttk.Button(
+        self.validate_button = ttk.Button(
+            buttons, text="Validate", command=self.validate
+        )
+        self.validate_button.pack(side="left")
+        self.valid_example_button = ttk.Button(
             buttons, text="Valid example", command=self.load_valid
-        ).pack(side="left", padx=6)
-        ttk.Button(
+        )
+        self.valid_example_button.pack(side="left", padx=6)
+        self.invalid_example_button = ttk.Button(
             buttons, text="Invalid example", command=self.load_invalid
-        ).pack(side="left")
-        ttk.Button(buttons, text="Clear", command=self.clear).pack(side="right")
+        )
+        self.invalid_example_button.pack(side="left")
+        self.skip_animation_var = tk.BooleanVar(master=self.root, value=False)
+        ttk.Checkbutton(
+            buttons,
+            text="Skip animation",
+            variable=self.skip_animation_var,
+        ).pack(side="left", padx=(10, 0))
+        self.clear_button = ttk.Button(
+            buttons, text="Clear", command=self.clear
+        )
+        self.clear_button.pack(side="right")
         ttk.Button(
             buttons, text="Copy results", command=self.copy_results
         ).pack(side="right", padx=(0, 6))
@@ -501,6 +526,7 @@ class AxiomsApp:
         self.output.tag_config("pass", foreground="#1a7f37")
         self.output.tag_config("fail", foreground="#cf222e")
         self.output.tag_config("head", font=("Consolas", 11, "bold"))
+        self.gavel = GavelAnimation(self.output)
 
         self.status_label = ttk.Label(main, text="", foreground="gray")
         self.status_label.pack(fill="x", pady=(6, 0))
@@ -537,6 +563,7 @@ class AxiomsApp:
         # Keyboard shortcuts: Ctrl+Enter validates.
         self.root.bind("<Control-Return>", self._validate_shortcut)
         self.root.bind("<Control-KP_Enter>", self._validate_shortcut)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # -----------------------------------------------------------
     # BLOCK 7: Existing button and output helpers
@@ -557,6 +584,7 @@ class AxiomsApp:
         self.pmf_entry.focus_set()
 
     def clear(self) -> None:
+        self.cancel_animation()
         self._fill("", "")
         self.title_entry.delete(0, tk.END)
 
@@ -575,6 +603,161 @@ class AxiomsApp:
         for text, tag in lines:
             self.output.insert(tk.END, text + "\n", tag)
         self.output.config(state="disabled")
+
+    # --- Cancellable validation presentation and one-shot gavel ---
+    def _set_validation_controls_enabled(self, enabled: bool) -> None:
+        state = tk.NORMAL if enabled else tk.DISABLED
+        for button in (
+            self.validate_button,
+            self.valid_example_button,
+            self.invalid_example_button,
+            self.clear_button,
+        ):
+            button.configure(state=state)
+
+    def _schedule_animation(
+        self, delay_ms: int, callback: Callable[..., None], *args: object
+    ) -> None:
+        if self._closing:
+            return
+
+        after_id: str | None = None
+
+        def run_callback() -> None:
+            if after_id in self._animation_after_ids:
+                self._animation_after_ids.remove(after_id)
+            if not self._closing:
+                callback(*args)
+
+        after_id = self.root.after(delay_ms, run_callback)
+        self._animation_after_ids.append(after_id)
+
+    def cancel_animation(self) -> None:
+        """Cancel pending animation steps and restore the normal UI state."""
+        for after_id in self._animation_after_ids:
+            self.root.after_cancel(after_id)
+        self._animation_after_ids.clear()
+        self.animation_running = False
+        self._animation_lines.clear()
+        self._animation_checks.clear()
+        self.gavel.cancel()
+        self._set_validation_controls_enabled(True)
+
+    def _render_animation_lines(self) -> None:
+        self._write(self._animation_lines)
+        self.output.see(tk.END)
+
+    @staticmethod
+    def _animated_check_line(check: CheckResult) -> tuple[str, str]:
+        if check.ok is None:
+            suffix = f" ({check.detail})" if check.detail else ""
+            return f"{check.title}: SKIPPED{suffix}", "head"
+        if check.ok:
+            suffix = f"  ({check.detail})" if check.detail else ""
+            return f"{check.title}: ✓ PASS{suffix}", "pass"
+        return f"{check.title}: ✗ FAIL  ->  {check.detail}", "fail"
+
+    def _begin_validation_animation(self, report: ValidationReport) -> None:
+        self.animation_running = True
+        self._animation_checks = list(report.checks)
+        self._animation_valid = report.valid
+        self._animation_lines = [("RESULTS", "head"), ("", "")]
+        self._set_validation_controls_enabled(False)
+        self._show_axiom_step(0)
+
+    def _show_axiom_step(self, check_index: int) -> None:
+        if not self.animation_running:
+            return
+        if check_index >= len(self._animation_checks):
+            self._start_dots_animation()
+            return
+
+        check = self._animation_checks[check_index]
+        if check.ok is None:
+            self._animation_lines.append(self._animated_check_line(check))
+            self._render_animation_lines()
+            self._schedule_animation(0, self._show_axiom_step, check_index + 1)
+            return
+
+        axiom_name = " ".join(check.title.split()[:2])
+        self._animation_lines.append((f"Checking {axiom_name}... |", "head"))
+        self._active_animation_line_index = len(self._animation_lines) - 1
+        self._render_animation_lines()
+        self._schedule_animation(SPINNER_MS, self._spin_axiom, check_index, 1)
+
+    def _spin_axiom(self, check_index: int, tick: int) -> None:
+        if not self.animation_running:
+            return
+
+        total_ticks = max(
+            1, (AXIOM_DELAY_MS + SPINNER_MS - 1) // SPINNER_MS
+        )
+        check = self._animation_checks[check_index]
+        line_index = self._active_animation_line_index
+        if tick >= total_ticks:
+            self._animation_lines[line_index] = self._animated_check_line(check)
+            self._render_animation_lines()
+            self._schedule_animation(0, self._show_axiom_step, check_index + 1)
+            return
+
+        frames = "|/-\\"
+        axiom_name = " ".join(check.title.split()[:2])
+        self._animation_lines[line_index] = (
+            f"Checking {axiom_name}... {frames[tick % len(frames)]}",
+            "head",
+        )
+        self._render_animation_lines()
+        self._schedule_animation(SPINNER_MS, self._spin_axiom, check_index, tick + 1)
+
+    def _start_dots_animation(self) -> None:
+        self._dots_frames = ("● ○ ○", "● ● ○", "● ● ●")
+        self._dots_interval_ms = max(1, DOTS_MS // 6)
+        self._dots_elapsed_ms = 0
+        self._animation_lines.append((self._dots_frames[0], "head"))
+        self._render_animation_lines()
+        self._schedule_animation(
+            min(self._dots_interval_ms, DOTS_MS),
+            self._advance_dots_animation,
+            1,
+        )
+
+    def _advance_dots_animation(self, frame_index: int) -> None:
+        if not self.animation_running:
+            return
+        self._dots_elapsed_ms = min(
+            DOTS_MS, self._dots_elapsed_ms + self._dots_interval_ms
+        )
+        if self._dots_elapsed_ms >= DOTS_MS:
+            self.gavel.play(
+                valid=self._animation_valid,
+                on_done=self._finish_validation_animation,
+            )
+            return
+
+        self._animation_lines[-1] = (
+            self._dots_frames[frame_index % len(self._dots_frames)],
+            "head",
+        )
+        self._render_animation_lines()
+        self._schedule_animation(
+            min(self._dots_interval_ms, DOTS_MS - self._dots_elapsed_ms),
+            self._advance_dots_animation,
+            frame_index + 1,
+        )
+
+    def _finish_validation_animation(self) -> None:
+        verdict = "VALID" if self._animation_valid else "INVALID"
+        tag = "pass" if self._animation_valid else "fail"
+        self._animation_lines[-1] = ("", "")
+        self._animation_lines.append((f"VERDICT: {verdict}", tag))
+        self._render_animation_lines()
+        self.animation_running = False
+        self._set_validation_controls_enabled(True)
+
+    def _on_close(self) -> None:
+        self._closing = True
+        self.cancel_animation()
+        self.root.destroy()
 
     def _validate_shortcut(self, _event: object = None) -> str:
         self.validate()
@@ -797,6 +980,7 @@ class AxiomsApp:
         )
 
     def _restore_history(self, session_id: str) -> None:
+        self.cancel_animation()
         entry = self._find_history_entry(session_id)
         if entry is None:
             return
@@ -1024,6 +1208,9 @@ class AxiomsApp:
     # BLOCK 11: The main Validate action
     # -----------------------------------------------------------
     def validate(self) -> None:
+        if self.animation_running or self._closing:
+            return
+
         # Step 1: read and parse the input
         try:
             pmf = parse_pmf(self.pmf_entry.get())
@@ -1039,11 +1226,15 @@ class AxiomsApp:
         report = validate_assignment(pmf, events)
         lines = render_report(report)
 
-        # Step 3: show and store the verdict
-        self._write(lines)
+        # Save immediately; animation only reveals this already-computed report.
         self._record_session(
             lines, VERDICT_VALID if report.valid else VERDICT_INVALID
         )
+        if self.skip_animation_var.get():
+            self._write(lines)
+            return
+
+        self._begin_validation_animation(report)
 
 
 # ---------------------------------------------------------------
