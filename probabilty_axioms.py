@@ -18,12 +18,16 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from tkinter import messagebox, simpledialog, ttk
+from tkinter import font as tkfont
 from typing import Sequence
 from uuid import uuid4
 
 TOL = 1e-9
 NEGATIVE_TOL = 1e-12
 MAX_HISTORY = 200
+SIDEBAR_WIDTH = 270
+LEFT_MIN_WIDTH = 680
+DATE_FORMAT = "%b {day}, %Y · {hour}:{minute} %p"
 VERDICT_VALID = "valid"
 VERDICT_INVALID = "invalid"
 
@@ -244,6 +248,8 @@ class HistoryEntry:
     lines: list[tuple[str, str]]
     verdict: str
     pinned: bool = False
+    created: str | None = None
+    modified: str | None = None
 
     @classmethod
     def from_dict(cls, data: object) -> "HistoryEntry":
@@ -296,6 +302,8 @@ class HistoryEntry:
         except ValueError:
             raise ValueError("'created_at' must be an ISO-8601 timestamp") from None
 
+        created = data.get("created", None)
+        modified = data.get("modified", None)
         return cls(
             id=session_id,
             session_number=session_number,
@@ -306,6 +314,8 @@ class HistoryEntry:
             lines=lines,
             verdict=verdict,
             pinned=pinned,
+            created=created if isinstance(created, str) else None,
+            modified=modified if isinstance(modified, str) else None,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -314,6 +324,8 @@ class HistoryEntry:
             "session_number": self.session_number,
             "title": self.title,
             "created_at": self.created_at,
+            "created": self.created,
+            "modified": self.modified,
             "pmf": self.pmf,
             "events": self.events,
             "lines": [[text, tag] for text, tag in self.lines],
@@ -392,10 +404,11 @@ class AxiomsApp:
         self.store = HistoryStore(Path(__file__).with_name("history.json"))
         self.history: list[HistoryEntry] = []
         self.sidebar_visible = True
+        self._active_session_id: str | None = None
 
         root.title("Kolmogorov Axioms Validator")
         root.geometry("960x600")
-        root.minsize(680, 480)
+        root.minsize(LEFT_MIN_WIDTH + SIDEBAR_WIDTH, 480)
 
         self._build_ui()
         self._load_history()
@@ -406,11 +419,22 @@ class AxiomsApp:
     # BLOCK 6: Building the interface
     # -----------------------------------------------------------
     def _build_ui(self) -> None:
+        # The main column expands; the history column stays fixed-width.
+        self.root.grid_columnconfigure(0, weight=1)
+        self.root.grid_rowconfigure(0, weight=1)
+
         main = ttk.Frame(self.root, padding=12)
-        main.pack(side="left", fill="both", expand=True)
-        self.sidebar = ttk.Frame(self.root, padding=(8, 12, 12, 12), width=270)
-        self.sidebar.pack(side="right", fill="y")
-        self.sidebar.pack_propagate(False)
+        main.grid(row=0, column=0, sticky="nsew")
+        self.sidebar = ttk.Frame(self.root, width=SIDEBAR_WIDTH)
+        self.sidebar.grid(row=0, column=1, sticky="ns")
+        self.sidebar.grid_propagate(False)
+        ttk.Separator(self.sidebar, orient="vertical").grid(
+            row=0, column=0, sticky="ns"
+        )
+        sidebar_content = ttk.Frame(self.sidebar, padding=(8, 12, 12, 12))
+        sidebar_content.grid(row=0, column=1, sticky="nsew")
+        self.sidebar.grid_columnconfigure(1, weight=1)
+        self.sidebar.grid_rowconfigure(0, weight=1)
 
         # --- Optional session title ---
         main_header = ttk.Frame(main)
@@ -482,12 +506,15 @@ class AxiomsApp:
         self.status_label.pack(fill="x", pady=(6, 0))
 
         # --- Scrollable history sidebar ---
+        self.history_title_font = tkfont.Font(
+            root=self.root, font=("Segoe UI", 9)
+        )
         ttk.Label(
-            self.sidebar,
+            sidebar_content,
             text="History",
             font=("Segoe UI", 11, "bold"),
         ).pack(anchor="w", pady=(0, 8))
-        history_list_frame = ttk.Frame(self.sidebar)
+        history_list_frame = ttk.Frame(sidebar_content)
         history_list_frame.pack(fill="both", expand=True)
         self.history_canvas = tk.Canvas(
             history_list_frame, highlightthickness=0, borderwidth=0
@@ -521,6 +548,7 @@ class AxiomsApp:
         self._fill("a:0.5, b:-0.1, c:0.6", "a ; b")
 
     def _fill(self, pmf_text: str, events_text: str) -> None:
+        self._active_session_id = None
         self.pmf_entry.delete(0, tk.END)
         self.pmf_entry.insert(0, pmf_text)
         self.events_entry.delete(0, tk.END)
@@ -579,14 +607,30 @@ class AxiomsApp:
     # BLOCK 9: Drawing and collapsing the history sidebar
     # -----------------------------------------------------------
     def _toggle_sidebar(self) -> None:
-        if self.sidebar_visible:
-            self.sidebar.pack_forget()
-            button_text = "Show history"
-        else:
-            self.sidebar.pack(side="right", fill="y")
+        self.root.update_idletasks()
+        current_width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        x = self.root.winfo_x()
+        y = self.root.winfo_y()
+
+        showing = not self.sidebar_visible
+        if showing:
+            self.sidebar.grid()
             button_text = "Hide history"
-        self.sidebar_visible = not self.sidebar_visible
+            min_width = LEFT_MIN_WIDTH + SIDEBAR_WIDTH
+            new_width = current_width + SIDEBAR_WIDTH
+            x = min(x, self.root.winfo_screenwidth() - new_width)
+        else:
+            self.sidebar.grid_remove()
+            button_text = "Show history"
+            min_width = LEFT_MIN_WIDTH
+            new_width = current_width - SIDEBAR_WIDTH
+
+        self.sidebar_visible = showing
         self.sidebar_toggle_button.configure(text=button_text)
+        self.root.minsize(min_width, 480)
+        self.root.geometry(f"{new_width}x{height}{x:+d}{y:+d}")
+        self.root.update_idletasks()
 
     def _update_history_scrollregion(self, _event: object = None) -> None:
         bbox = self.history_canvas.bbox("all")
@@ -637,28 +681,32 @@ class AxiomsApp:
     def _create_history_row(self, entry: HistoryEntry) -> None:
         row = ttk.Frame(self.history_inner, padding=(4, 5))
         row.pack(fill="x", pady=1)
-        content = ttk.Frame(row)
-        content.pack(side="left", fill="x", expand=True)
+        row.grid_columnconfigure(1, weight=1)
 
         dot_color = "#1a7f37" if entry.verdict == VERDICT_VALID else "#cf222e"
         dot = ttk.Label(
-            content, text="●", foreground=dot_color, font=("Segoe UI", 9)
+            row, text="●", foreground=dot_color, font=("Segoe UI", 9)
         )
-        dot.pack(side="left", padx=(0, 5))
+        dot.grid(row=0, column=0, sticky="w", padx=(0, 5))
 
         title = ttk.Label(
-            content,
+            row,
             text=entry.title,
             anchor="w",
-            wraplength=155,
             justify="left",
+            font=self.history_title_font,
         )
-        title.pack(side="left", fill="x", expand=True)
+        title.grid(row=0, column=1, sticky="ew")
+        title.bind(
+            "<Configure>",
+            lambda event, label=title, full_title=entry.title: (
+                self._fit_history_title(label, full_title, event.width)
+            ),
+        )
 
-        pin = None
         if entry.pinned:
-            pin = ttk.Label(content, text="📌", font=("Segoe UI", 9))
-            pin.pack(side="left", padx=3)
+            pin = ttk.Label(row, text="📌", font=("Segoe UI", 9))
+            pin.grid(row=0, column=2, padx=3)
 
         time_label = ttk.Label(
             row,
@@ -666,7 +714,7 @@ class AxiomsApp:
             foreground="gray",
             font=("Segoe UI", 8),
         )
-        time_label.pack(side="left", padx=(4, 2))
+        time_label.grid(row=0, column=3, padx=(4, 2))
 
         menu_button = ttk.Button(
             row,
@@ -676,10 +724,10 @@ class AxiomsApp:
                 session_id, menu_button
             ),
         )
-        menu_button.pack(side="right")
+        menu_button.grid(row=0, column=4, sticky="e")
 
-        clickable = [row, content, dot, title, time_label]
-        if pin is not None:
+        clickable = [row, dot, title, time_label]
+        if entry.pinned:
             clickable.append(pin)
         for widget in clickable:
             widget.configure(cursor="hand2")
@@ -689,6 +737,33 @@ class AxiomsApp:
                     session_id
                 ),
             )
+
+    def _fit_history_title(
+        self, title_label: ttk.Label, full_title: str, available_width: int
+    ) -> None:
+        """Truncate titles to their allocated width without squeezing row controls."""
+        ellipsis = "..."
+        if self.history_title_font.measure(full_title) <= available_width:
+            display_title = full_title
+        else:
+            low, high = 0, len(full_title)
+            while low < high:
+                middle = (low + high + 1) // 2
+                if (
+                    self.history_title_font.measure(full_title[:middle] + ellipsis)
+                    <= available_width
+                ):
+                    low = middle
+                else:
+                    high = middle - 1
+            display_title = (
+                full_title[:low] + ellipsis
+                if self.history_title_font.measure(ellipsis) <= available_width
+                else ""
+            )
+
+        if title_label.cget("text") != display_title:
+            title_label.configure(text=display_title)
 
     # -----------------------------------------------------------
     # BLOCK 10: Restoring and managing individual sessions
@@ -701,6 +776,20 @@ class AxiomsApp:
             return moment.strftime("%I:%M %p").lstrip("0")
         return moment.strftime("%b %d, %H:%M")
 
+    @staticmethod
+    def _format_session_date(timestamp: str | None) -> str:
+        if not timestamp:
+            return "Unknown"
+        try:
+            moment = datetime.fromisoformat(timestamp)
+        except ValueError:
+            return "Unknown"
+        return moment.strftime(DATE_FORMAT).format(
+            day=moment.day,
+            hour=moment.strftime("%I").lstrip("0") or "0",
+            minute=moment.strftime("%M"),
+        )
+
     def _find_history_entry(self, session_id: str) -> HistoryEntry | None:
         return next(
             (entry for entry in self.history if entry.id == session_id),
@@ -711,6 +800,7 @@ class AxiomsApp:
         entry = self._find_history_entry(session_id)
         if entry is None:
             return
+        self._active_session_id = session_id
         self.title_entry.delete(0, tk.END)
         self.title_entry.insert(0, entry.title)
         self.pmf_entry.delete(0, tk.END)
@@ -726,6 +816,10 @@ class AxiomsApp:
             return
 
         menu = tk.Menu(self.root, tearoff=False)
+        menu.add_command(
+            label="Info",
+            command=lambda: self._show_session_info(session_id),
+        )
         menu.add_command(
             label="Rename",
             command=lambda: self._rename_history_entry(session_id),
@@ -745,6 +839,70 @@ class AxiomsApp:
             )
         finally:
             menu.grab_release()
+
+    def _show_session_info(self, session_id: str) -> None:
+        entry = self._find_history_entry(session_id)
+        if entry is None:
+            return
+
+        popup = tk.Toplevel(self.root)
+        popup.title("Session Info")
+        popup.transient(self.root)
+        popup.resizable(False, False)
+
+        content = ttk.Frame(popup, padding=12)
+        content.grid(row=0, column=0, sticky="nsew")
+        content.columnconfigure(1, weight=1)
+        labels = ("Title:", "Created:", "Last modified:", "Verdict:")
+        values = (
+            entry.title,
+            self._format_session_date(entry.created),
+            self._format_session_date(entry.modified),
+            "Valid" if entry.verdict == VERDICT_VALID else "Invalid",
+        )
+        for row, (label_text, value_text) in enumerate(zip(labels, values)):
+            ttk.Label(
+                content, text=label_text, font=("Segoe UI", 9, "bold")
+            ).grid(row=row, column=0, sticky="nw", padx=(0, 12), pady=3)
+            value_label = ttk.Label(
+                content,
+                text=value_text,
+                wraplength=360,
+                justify="left",
+            )
+            if label_text == "Verdict:":
+                value_label.configure(
+                    foreground="#1a7f37"
+                    if entry.verdict == VERDICT_VALID
+                    else "#cf222e"
+                )
+            value_label.grid(row=row, column=1, sticky="w", pady=3)
+
+        def close_popup() -> None:
+            popup.grab_release()
+            popup.destroy()
+
+        ttk.Button(content, text="Close", command=close_popup).grid(
+            row=len(labels), column=0, columnspan=2, sticky="e", pady=(10, 0)
+        )
+        popup.protocol("WM_DELETE_WINDOW", close_popup)
+        popup.bind("<Escape>", lambda _event: close_popup())
+
+        self.root.update_idletasks()
+        popup.update_idletasks()
+        x = self.root.winfo_rootx() + (
+            self.root.winfo_width() - popup.winfo_reqwidth()
+        ) // 2
+        y = self.root.winfo_rooty() + (
+            self.root.winfo_height() - popup.winfo_reqheight()
+        ) // 2
+        x = max(0, min(x, self.root.winfo_screenwidth() - popup.winfo_reqwidth()))
+        y = max(
+            0, min(y, self.root.winfo_screenheight() - popup.winfo_reqheight())
+        )
+        popup.geometry(f"+{x}+{y}")
+        popup.grab_set()
+        popup.focus_set()
 
     def _rename_history_entry(self, session_id: str) -> None:
         entry = self._find_history_entry(session_id)
@@ -767,6 +925,7 @@ class AxiomsApp:
                 f"{self._format_time(entry.created_at)}"
             )
         entry.title = new_title
+        entry.modified = datetime.now().astimezone().isoformat(timespec="seconds")
         self._save_history()
         self._refresh_history_list()
 
@@ -792,6 +951,7 @@ class AxiomsApp:
         if entry is None:
             return
         entry.pinned = not entry.pinned
+        entry.modified = datetime.now().astimezone().isoformat(timespec="seconds")
         self._save_history()
         self._refresh_history_list()
 
@@ -813,11 +973,26 @@ class AxiomsApp:
     def _record_session(
         self, lines: Sequence[tuple[str, str]], verdict: str
     ) -> None:
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        if self._active_session_id is not None:
+            active_entry = self._find_history_entry(self._active_session_id)
+            if active_entry is not None:
+                title = self.title_entry.get().strip()
+                if title:
+                    active_entry.title = title
+                active_entry.pmf = self.pmf_entry.get()
+                active_entry.events = self.events_entry.get()
+                active_entry.lines = [(text, tag) for text, tag in lines]
+                active_entry.verdict = verdict
+                active_entry.modified = timestamp
+                self._save_history()
+                self._refresh_history_list()
+                return
+
         session_number = max(
             (entry.session_number for entry in self.history),
             default=0,
         ) + 1
-        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
         title = self.title_entry.get().strip()
         if not title:
             title = (
@@ -837,6 +1012,8 @@ class AxiomsApp:
                 lines=[(text, tag) for text, tag in lines],
                 verdict=verdict,
                 pinned=False,
+                created=timestamp,
+                modified=timestamp,
             ),
         )
         self._prune_history()

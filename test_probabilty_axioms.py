@@ -161,6 +161,8 @@ def make_entry_dict(**overrides):
         "session_number": 1,
         "title": "Session 1",
         "created_at": "2026-01-02T03:04:05+00:00",
+        "created": "2026-01-02T03:04:05+00:00",
+        "modified": "2026-01-02T03:04:05+00:00",
         "pmf": "a:1",
         "events": "",
         "lines": [["RESULTS", "head"], ["VERDICT: VALID probability assignment", "pass"]],
@@ -175,6 +177,18 @@ class HistoryEntryTests(unittest.TestCase):
     def test_round_trip(self):
         entry = ax.HistoryEntry.from_dict(make_entry_dict())
         self.assertEqual(entry.to_dict(), make_entry_dict())
+
+    def test_legacy_entry_without_info_timestamps_loads(self):
+        data = make_entry_dict()
+        del data["created"]
+        del data["modified"]
+
+        entry = ax.HistoryEntry.from_dict(data)
+
+        self.assertIsNone(entry.created)
+        self.assertIsNone(entry.modified)
+        self.assertIsNone(entry.to_dict()["created"])
+        self.assertIsNone(entry.to_dict()["modified"])
 
     def test_rejects_non_object(self):
         with self.assertRaisesRegex(ValueError, "JSON object"):
@@ -195,6 +209,14 @@ class HistoryEntryTests(unittest.TestCase):
     def test_rejects_bad_timestamp(self):
         with self.assertRaisesRegex(ValueError, "ISO-8601"):
             ax.HistoryEntry.from_dict(make_entry_dict(created_at="yesterday"))
+
+    def test_session_info_date_format_and_bad_dates(self):
+        self.assertEqual(
+            ax.AxiomsApp._format_session_date("2026-11-21T15:51:00"),
+            "Nov 21, 2026 · 3:51 PM",
+        )
+        self.assertEqual(ax.AxiomsApp._format_session_date(None), "Unknown")
+        self.assertEqual(ax.AxiomsApp._format_session_date("not a date"), "Unknown")
 
 
 class HistoryStoreTests(unittest.TestCase):
