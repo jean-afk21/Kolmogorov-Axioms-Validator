@@ -1,5 +1,5 @@
 # gavel_animation.py
-# Reusable "BANG!" gavel animation for tkinter (Python 3.8+, no extra packages).
+# Reusable gavel impact animation for tkinter (Python 3.8+, no extra packages).
 #
 # How to use it inside your app (parent = the Text widget that shows results):
 #
@@ -28,14 +28,14 @@ WINDUP_MS = 340          # gavel rises
 HOLD_MS = 160            # tense pause at the top
 SLAM_MS = 110            # very fast swing down
 BOUNCE_MS = 280          # small rebound after hitting the block
-AFTER_IMPACT_MS = 800    # how long "BANG!" stays on screen after the hit
+AFTER_IMPACT_MS = 800    # how long the impact stays on screen
 
 T_SLAM = WINDUP_MS + HOLD_MS          # time when the slam starts
 T_IMPACT = T_SLAM + SLAM_MS           # time of the hit
 T_END = T_IMPACT + AFTER_IMPACT_MS    # time when the animation finishes
 
 DESIGN_W, DESIGN_H = 400, 300         # we draw at this size, then scale to fit
-PIVOT = (320, 210)                    # the gavel swings around this point
+PIVOT = (322, 192)                    # the gavel swings around this point
 REST_DEG, RAISED_DEG = 18, 72         # start angle and fully raised angle
 IMPACT_POINT = (160, 220)             # where the head meets the block
 SHAKE_PX = 9                          # screen shake strength at the hit
@@ -43,19 +43,11 @@ GRAVITY = 900                         # pulls the sparks down
 
 BG = "#16161d"
 OUTLINE = "#2a170b"
-WOOD = {"block": "#8a5a34", "base": "#6b4423", "handle": "#c98a52",
-        "head": "#a86a3a", "band": "#f2c94c"}
 PALETTES = {
-    True:  {"sparks": ["#ffd23f", "#ff9f1c", "#ffffff"], "burst": "#ffd23f",
-            "burst_text": "#2a170b", "ring": "#ffe58a"},
-    False: {"sparks": ["#ff4d5a", "#ff8a5c", "#ffffff"], "burst": "#ff4d5a",
-            "burst_text": "#ffffff", "ring": "#ff9aa2"},
+    True:  {"sparks": ["#ffd23f", "#ff9f1c", "#ffffff"], "ring": "#ffe58a"},
+    False: {"sparks": ["#ff4d5a", "#ff8a5c", "#ffffff"], "ring": "#ff9aa2"},
 }
 
-# Gavel shapes, drawn for a gavel lying flat (0 degrees) in the 400x300 space
-HANDLE = [(160, 205), (320, 205), (320, 215), (160, 215)]
-HEAD = [(142, 175), (178, 175), (178, 220), (142, 220)]
-BAND = [(156, 175), (164, 175), (164, 220), (156, 220)]
 
 
 # ------------------------------------------------------------------
@@ -79,13 +71,6 @@ def ease_in_cubic(t):
     return t ** 3
 
 
-def ease_out_back(t):
-    """Overshoots a little before settling (used for the BANG! pop)."""
-    c1 = 1.70158
-    c3 = c1 + 1
-    return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2
-
-
 def blend(c1, c2, t):
     """Mix two '#rrggbb' colors. t=0 gives c1, t=1 gives c2."""
     t = clamp01(t)
@@ -100,6 +85,55 @@ def rotate_point(x, y, cx, cy, deg):
     dx, dy = x - cx, y - cy
     return (cx + dx * math.cos(rad) - dy * math.sin(rad),
             cy + dx * math.sin(rad) + dy * math.cos(rad))
+
+
+def rounded_rect(x1, y1, x2, y2, r, n=5):
+    """Points of a rectangle with rounded corners (so it can be rotated)."""
+    pts = []
+    corners = [(x2 - r, y1 + r, -90), (x2 - r, y2 - r, 0),
+               (x1 + r, y2 - r, 90), (x1 + r, y1 + r, 180)]
+    for cx, cy, start in corners:
+        for i in range(n + 1):
+            a = math.radians(start + 90 * i / n)
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return pts
+
+
+# ------------------------------------------------------------------
+# BLOCK 2b: Gavel artwork (original cartoon-style design, side view)
+# Drawn for a gavel lying flat (0 degrees) in the 400x300 design space.
+# The head's bottom edge sits at y=220, which is the top of the sound block.
+# Each part is (points, fill color, outline color); "" means no outline.
+# Change the colors in WOOD to re-paint everything.
+# ------------------------------------------------------------------
+WOOD = {"head": "#a86a3a", "cap": "#8a5230", "handle": "#c98a52",
+        "light": "#d9a066", "block": "#8a5a34", "base": "#6b4423",
+        "gold": "#f2c94c", "gold_light": "#fff0a8"}
+
+HEAD_PARTS = [
+    (rounded_rect(144, 176, 176, 208, 4), WOOD["head"], OUTLINE),          # barrel
+    (rounded_rect(148, 179, 153, 205, 2, 3), WOOD["light"], ""),           # shine
+    (rounded_rect(136, 164, 184, 180, 6), WOOD["cap"], OUTLINE),           # top cap
+    (rounded_rect(142, 166, 178, 169.5, 1.7, 3), WOOD["light"], ""),
+    (rounded_rect(136, 204, 184, 220, 6), WOOD["cap"], OUTLINE),           # striking cap
+    (rounded_rect(142, 206, 178, 209.5, 1.7, 3), WOOD["light"], ""),
+    (rounded_rect(139, 183, 181, 201, 3), WOOD["gold"], OUTLINE),          # gold band
+    (rounded_rect(143, 185.5, 150, 198.5, 2, 3), WOOD["gold_light"], ""),  # band shine
+]
+HANDLE_PARTS = [
+    ([(190, 185), (304, 187), (304, 197), (190, 199)], WOOD["handle"], OUTLINE),
+    ([(194, 186.5), (302, 188.3), (302, 189.8), (194, 188)], WOOD["light"], ""),
+    (rounded_rect(179, 182, 192, 202, 3), WOOD["gold"], OUTLINE),          # collar
+    (rounded_rect(298, 181, 328, 203, 8), WOOD["cap"], OUTLINE),           # knob
+    (rounded_rect(305, 184, 321, 187.5, 1.7, 3), WOOD["light"], ""),
+]
+# outlines used for the motion trail while slamming
+GHOST_SHAPES = [rounded_rect(136, 164, 184, 220, 6),
+                [(190, 185), (304, 187), (304, 197), (190, 199)]]
+# sound block
+BLOCK_BASE = rounded_rect(98, 238, 222, 254, 4)
+BLOCK_TOP = rounded_rect(108, 220, 212, 240, 5)
+BLOCK_SHINE = rounded_rect(114, 223, 206, 227, 2, 3)
 
 
 def _beep():
@@ -245,7 +279,7 @@ class GavelAnimation:
             shake_x = self._rng.uniform(-amp, amp)
             shake_y = self._rng.uniform(-amp, amp)
         ox = (w - DESIGN_W * s) / 2 - 10 * s + shake_x
-        oy = (h - DESIGN_H * s) / 2 + shake_y
+        oy = (h - DESIGN_H * s) / 2 + 10 * s + shake_y
 
         def P(x, y):                                 # design -> screen coords
             return (ox + x * s, oy + y * s)
@@ -265,24 +299,23 @@ class GavelAnimation:
 
         lw = max(1, round(2 * s))                    # line width
 
-        # sound block
-        poly([(110, 220), (210, 220), (210, 240), (110, 240)],
-             fill=WOOD["block"], outline=OUTLINE, width=lw)
-        poly([(100, 240), (220, 240), (220, 255), (100, 255)],
-             fill=WOOD["base"], outline=OUTLINE, width=lw)
+        # floor shadow and sound block
+        c.create_oval(*P(92, 247), *P(228, 265), fill="#1f1f29", outline="")
+        poly(BLOCK_BASE, fill=WOOD["base"], outline=OUTLINE, width=lw)
+        poly(BLOCK_TOP, fill=WOOD["block"], outline=OUTLINE, width=lw)
+        poly(BLOCK_SHINE, fill=WOOD["light"], outline="")
 
         # motion-trail outlines while slamming
         deg = self._angle(t)
         if T_SLAM <= t < T_IMPACT + 20:
             for k in (3, 2, 1):
                 trail = blend(WOOD["head"], BG, 0.25 * k)
-                poly(HEAD, deg + 9 * k, fill="", outline=trail, width=lw)
-                poly(HANDLE, deg + 9 * k, fill="", outline=trail, width=lw)
+                for shape in GHOST_SHAPES:
+                    poly(shape, deg + 9 * k, fill="", outline=trail, width=lw)
 
-        # the gavel itself
-        poly(HANDLE, deg, fill=WOOD["handle"], outline=OUTLINE, width=lw)
-        poly(HEAD, deg, fill=WOOD["head"], outline=OUTLINE, width=lw)
-        poly(BAND, deg, fill=WOOD["band"], outline="")
+        # the gavel itself (handle first, then head on top)
+        for pts, fill, outline in HANDLE_PARTS + HEAD_PARTS:
+            poly(pts, deg, fill=fill, outline=outline, width=lw)
 
         if hit:
             self._draw_impact(c, P, s, since, pal)
@@ -317,22 +350,6 @@ class GavelAnimation:
             x1, y1 = P(x - r, y - r)
             x2, y2 = P(x + r, y + r)
             c.create_oval(x1, y1, x2, y2, fill=sp["color"], outline="")
-
-        # comic-book starburst with "BANG!" that pops in with overshoot
-        pop = ease_out_back(clamp01(since / 200.0))
-        if pop > 0.05:
-            bx, by = 215, 92
-            pts = []
-            for i in range(28):
-                ang = math.pi * i / 14 + math.radians(-8)
-                rad = (80 if i % 2 == 0 else 50) * pop
-                pts.extend(P(bx + rad * math.cos(ang), by + rad * math.sin(ang)))
-            c.create_polygon(pts, fill=pal["burst"], outline=OUTLINE,
-                             width=max(1, round(3 * s)))
-            px = int(36 * s * pop)
-            if px >= 4:
-                c.create_text(*P(bx, by), text="BANG!", fill=pal["burst_text"],
-                              font=("Arial Black", -px, "bold"), angle=8)
 
 
 # ------------------------------------------------------------------

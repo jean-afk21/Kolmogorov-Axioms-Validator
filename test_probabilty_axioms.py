@@ -265,6 +265,39 @@ class HistoryStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not valid JSON"):
                 ax.HistoryStore(path).load()
 
+    def test_add_rename_delete_and_toggle_pin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ax.HistoryStore(Path(tmp) / "history.json")
+            entries: list[ax.Session] = []
+            entry = ax.Session.from_dict(make_entry_dict())
+
+            store.add(entries, entry)
+            self.assertEqual(store.get(entries, "abc123"), entry)
+
+            self.assertTrue(store.rename(entries, "abc123", "Renamed"))
+            self.assertEqual(store.get(entries, "abc123").title, "Renamed")
+
+            self.assertTrue(store.toggle_pin(entries, "abc123"))
+            self.assertTrue(store.get(entries, "abc123").pinned)
+            pinned, recent = store.get_sorted_lists(entries)
+            self.assertEqual(pinned, [entry])
+            self.assertEqual(recent, [])
+
+            self.assertTrue(store.delete(entries, "abc123"))
+            self.assertEqual(entries, [])
+
+    def test_old_session_without_created_or_modified_defaults_to_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "history.json"
+            data = make_entry_dict()
+            del data["created"]
+            del data["modified"]
+            path.write_text(json.dumps([data]), encoding="utf-8")
+
+            entry = ax.HistoryStore(path).load()[0]
+            self.assertIsNone(entry.created)
+            self.assertIsNone(entry.modified)
+
 
 class PerformanceCharacteristicTests(unittest.TestCase):
     """Guard the O(n) disjointness check against a return to O(n^2)."""

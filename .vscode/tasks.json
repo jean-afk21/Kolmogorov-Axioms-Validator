@@ -1,0 +1,45 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Tkinter gavel smoke app",
+			"type": "shell",
+			"command": "C:/Users/HP/AppData/Local/Programs/Python/Python314/python.exe",
+			"args": [
+				"probabilty_axioms.py"
+			],
+			"isBackground": true,
+			"group": "test"
+		},
+		{
+			"label": "Run corrected Tkinter app",
+			"type": "shell",
+			"command": "C:/Users/HP/AppData/Local/Programs/Python/Python314/python.exe",
+			"args": [
+				"probabilty_axioms.py"
+			],
+			"isBackground": true,
+			"group": "test"
+		},
+		{
+			"label": "Run fixed gavel app",
+			"type": "shell",
+			"command": "C:/Users/HP/AppData/Local/Programs/Python/Python314/python.exe",
+			"args": [
+				"probabilty_axioms.py"
+			],
+			"isBackground": true,
+			"group": "test"
+		},
+		{
+			"label": "Run final fixed app",
+			"type": "shell",
+			"command": "C:/Users/HP/AppData/Local/Programs/Python/Python314/python.exe",
+			"args": [
+				"probabilty_axioms.py"
+			],
+			"isBackground": true,
+			"group": "test"
+		}
+	]
+}
